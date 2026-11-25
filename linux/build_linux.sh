@@ -30,6 +30,8 @@ TORCH_TAG="$("$PY" -c 'import torch;v=torch.__version__.split("+");print("torch"
 import sys, re
 p, ver = sys.argv[1], sys.argv[2]
 s = open(p).read()
+# torch >= 2.13 headers require C++20 (the overlays pass -std=c++17, which suits the torch 2.11 Windows builds).
+s = s.replace('"-std=c++17"', '"-std=c++20"')
 s = s.replace('name="flash_attn_turing",', f'name="flash_attn_turing",\n    version="{ver}",\n    py_modules=["flash_attention_interface"],', 1)
 open(p, "w").write(s)
 PYEOF
