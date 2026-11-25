@@ -1,0 +1,153 @@
+diff --git a/csrc/flash_attn/flash_api.cpp b/csrc/flash_attn/flash_api.cpp
+index 4ab154d..fc2aa47 100644
+--- a/csrc/flash_attn/flash_api.cpp
++++ b/csrc/flash_attn/flash_api.cpp
+@@ -20,10 +20,14 @@ static constexpr bool kD32UsePadding = true;
+ #endif
+ 
+ // Fail closed before dispatch: HEADDIM_SWITCH has no fallback branch.
+-static inline void check_supported_head_size(const int64_t head_size) {
++static inline void check_supported_head_size(const int64_t head_size, bool forward) {
++    if (head_size == 256) {
++        TORCH_CHECK(forward, "D256 is forward-only");
++        return;
++    }
+     TORCH_CHECK(head_size == 32 || head_size == 64 || head_size == 96 || head_size == 128,
+                 "Unsupported head dimension ", head_size,
+-                ". Supported dimensions are 32, 64, 96, and 128.");
++                ". Supported dimensions are 32, 64, 96, 128, and 256 (forward only).");
+ }
+ 
+ static inline void check_fp16_cuda_contiguous(
+@@ -410,6 +414,12 @@ static inline void dispatch_mha_fwd_tile(Flash_fwd_params &params, const int til
+ }
+ 
+ void run_mha_fwd(Flash_fwd_params &params){
++    if (params.d == 256) {
++        BOOL_SWITCH(params.is_causal, Is_causal, [&] {
++            run_mha_fwd_<256, Is_causal>(params);
++        });
++        return;
++    }
+     const int tile = plan_fwd_tile_for_params(params);
+     HEADDIM_SWITCH(params.d, [&] {
+         BOOL_SWITCH(params.is_causal, Is_causal, [&] {
+@@ -455,8 +465,9 @@ mha_fwd(at::Tensor q,
+     TORCH_CHECK(v.size(1) == seqlen_k, "k and v seqlen_k must match");
+     TORCH_CHECK(v.size(2) == num_heads_k, "k and v num_heads must match");
+     TORCH_CHECK(k.size(3) == head_size && v.size(3) == head_size, "q/k/v head_dim must match");
+-    TORCH_CHECK(num_heads % num_heads_k == 0, "num_heads_q must be divisible by num_heads_k for GQA/MQA");
+-    check_supported_head_size(head_size);
++    TORCH_CHECK(num_heads > 0 && num_heads_k > 0 && num_heads % num_heads_k == 0,
++                "num_heads_q and num_heads_k must be positive and num_heads_q divisible by num_heads_k");
++    check_supported_head_size(head_size, true);
+     check_fp16_cuda_contiguous(q, "q", q);
+     check_fp16_cuda_contiguous(k, "k", q);
+     check_fp16_cuda_contiguous(v, "v", q);
+@@ -560,7 +571,7 @@ void mha_fwd_into(at::Tensor q,
+                 "q/k/v head_dim must match");
+     TORCH_CHECK(num_heads > 0 && num_heads_k > 0 && num_heads % num_heads_k == 0,
+                 "num_heads_q and num_heads_k must be positive and num_heads_q divisible by num_heads_k");
+-    check_supported_head_size(head_size);
++    check_supported_head_size(head_size, true);
+     TORCH_CHECK(!(kD32UsePadding && head_size == 32),
+                 "fwd_into requires FLASH_TURING_NATIVE_D32=1 for head dimension 32");
+ 
+@@ -649,7 +660,7 @@ mha_bwd(at::Tensor q,
+     TORCH_CHECK(k.size(3) == head_size && v.size(3) == head_size, "q/k/v head_dim must match");
+     TORCH_CHECK(out.sizes() == q.sizes() && dout.sizes() == q.sizes(), "out and dout must match q shape");
+     TORCH_CHECK(num_heads % num_heads_k == 0, "num_heads_q must be divisible by num_heads_k for GQA/MQA");
+-    check_supported_head_size(head_size);
++    check_supported_head_size(head_size, false);
+     check_fp16_cuda_contiguous(q, "q", q);
+     check_fp16_cuda_contiguous(k, "k", q);
+     check_fp16_cuda_contiguous(v, "v", q);
+@@ -775,12 +786,13 @@ mha_varlen_fwd(at::Tensor q,
+     TORCH_CHECK(k.size(1) == v.size(1), "k and v num_heads must match");
+     TORCH_CHECK(k.size(2) == v.size(2), "k and v head_dim must match");
+     TORCH_CHECK(q.size(2) == k.size(2), "q/k/v head_dim must match");
+-    TORCH_CHECK(q.size(1) % k.size(1) == 0, "num_heads_q must be divisible by num_heads_k for GQA/MQA");
++    TORCH_CHECK(q.size(1) > 0 && k.size(1) > 0 && q.size(1) % k.size(1) == 0,
++                "num_heads_q and num_heads_k must be positive and num_heads_q divisible by num_heads_k");
+ 
+     const int num_heads = q.size(1);
+     const int num_heads_k = k.size(1);
+     const int head_size = q.size(2);
+-    check_supported_head_size(head_size);
++    check_supported_head_size(head_size, true);
+     check_fp16_cuda_contiguous(q, "q", q);
+     check_fp16_cuda_contiguous(k, "k", q);
+     check_fp16_cuda_contiguous(v, "v", q);
+@@ -877,7 +889,7 @@ mha_varlen_bwd(at::Tensor q,
+     const int64_t total_k = k.size(0);
+     TORCH_CHECK(l.size(0) == batch_size && l.size(1) == num_heads && l.size(2) == max_seqlen_q,
+                 "l must have shape [batch_size, nheads_q, max_seqlen_q]");
+-    check_supported_head_size(head_size);
++    check_supported_head_size(head_size, false);
+     check_fp16_cuda_contiguous(q, "q", q);
+     check_fp16_cuda_contiguous(k, "k", q);
+     check_fp16_cuda_contiguous(v, "v", q);
+@@ -961,6 +973,7 @@ mha_varlen_bwd(at::Tensor q,
+ 
+ 
+ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++    m.attr("supports_d256") = true;
+     m.def("fwd", &mha_fwd, "Forward pass");
+     m.def("fwd_into", &mha_fwd_into, "Inference forward into caller-owned output/LSE buffers");
+     m.def("bwd", &mha_bwd, "Backward pass");
+diff --git a/csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm75.cu b/csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm75.cu
+new file mode 100644
+index 0000000..12e5041
+--- /dev/null
++++ b/csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm75.cu
+@@ -0,0 +1,13 @@
++#include "flash_fwd_launch_template.h"
++
++// Two warps own 16 query rows each. With SEPV the three half tiles
++// occupy 3 * 32 * 256 * 2 = 49152 bytes, including the shared Q/O tile.
++template<>
++void run_mha_fwd_<256, false>(Flash_fwd_params &params) {
++    run_mha_fwd_tile_impl_n<256, 32, 32, 2, false>(params);
++}
++
++template<>
++void run_mha_fwd_<256, true>(Flash_fwd_params &params) {
++    run_mha_fwd_tile_impl_n<256, 32, 32, 2, true>(params);
++}
+diff --git a/setup.py b/setup.py
+index 4a044fd..1f462b8 100644
+--- a/setup.py
++++ b/setup.py
+@@ -11,8 +11,7 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
+ if os.path.isdir(".git"):
+     subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"], check=True)
+ 
+-nvcc_flags = ["-std=c++17",
+-              "--expt-relaxed-constexpr",
++nvcc_flags = ["--expt-relaxed-constexpr",
+               "-arch=sm_75",
+               "-O3",
+               "--use_fast_math",
+@@ -23,7 +22,6 @@ if sys.platform == "win32":
+     from distutils import ccompiler
+     compiler = ccompiler.new_compiler()
+     if compiler.compiler_type == "msvc":
+-        nvcc_flags[0] = "-std=c++17"
+         nvcc_flags.extend(["-Xcompiler", "/Zc:preprocessor"])
+ # Opt-in native D32 kernels (default: V1 zero-pad-to-D64 path).
+ #   set FLASH_TURING_NATIVE_D32=1   (cmd: set FLASH_TURING_NATIVE_D32=1)
+@@ -77,11 +75,14 @@ native_d32_sources = [
+ 
+ setup(
+     name="flash_attn_turing",
++    version="0.2.4",
++    py_modules=["flash_attention_interface"],
+     ext_modules=[
+         CUDAExtension(
+             name="flash_attn_turing",
+             sources=["csrc/flash_attn/flash_api.cpp",
+                      "csrc/flash_attn/src/d32_pad_sm75.cu",
++                     "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm75.cu",
+                      "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm75.cu",
+                      "csrc/flash_attn/src/flash_fwd_hdim64_fp16_causal_sm75.cu",
+                      "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm75.cu",
