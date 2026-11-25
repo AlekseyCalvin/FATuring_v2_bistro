@@ -23,6 +23,19 @@ for o in $OVERLAYS; do
   echo "overlay: $o"
   cp -R "$HERE/$o/." "$WORK/src/"
 done
+# Optional patches applied after the overlays (e.g. PATCHES="V2.4_d256/V23.2_to_V24_d256.patch").
+for pt in ${PATCHES:-}; do
+  echo "patch: $pt"
+  "$PY" - "$WORK/src" <<'PYEOF'
+import sys, pathlib
+root = pathlib.Path(sys.argv[1])
+for name in ("setup.py", "csrc/flash_attn/flash_api.cpp"):
+    p = root / name
+    p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n"))
+PYEOF
+  git -C "$WORK/src" apply --check "$HERE/$pt"
+  git -C "$WORK/src" apply "$HERE/$pt"
+done
 # Linux packaging: ship the Python interface next to the extension and give the wheel a real version.
 VERSION="${FA_TURING_VERSION:-2.3.2}"
 TORCH_TAG="$("$PY" -c 'import torch;v=torch.__version__.split("+");print("torch"+v[0].replace(".","")[:3]+(("."+v[1]) if len(v)>1 else ""))')"

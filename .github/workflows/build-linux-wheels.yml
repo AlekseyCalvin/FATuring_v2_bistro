@@ -7,6 +7,14 @@ on:
         description: "Release tag to attach the wheels to (blank = artifacts only)"
         required: false
         default: ""
+      patches:
+        description: "Extra patches after the overlays, space separated (blank = none)"
+        required: false
+        default: ""
+      version:
+        description: "Wheel version"
+        required: false
+        default: "2.3.2"
   push:
     tags: ["linux-v*"]
 
@@ -39,7 +47,7 @@ jobs:
       - name: Build
         run: |
           . /opt/venv/bin/activate
-          export PYTHON=python MAX_JOBS=4
+          export PYTHON=python MAX_JOBS=4 PATCHES="${{ github.event.inputs.patches }}" FA_TURING_VERSION="${{ github.event.inputs.version || '2.3.2' }}"
           linux/build_linux.sh dist
       - uses: actions/upload-artifact@v4
         with:
