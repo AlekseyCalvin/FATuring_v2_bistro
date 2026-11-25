@@ -47,7 +47,7 @@ jobs:
       - name: Build
         run: |
           . /opt/venv/bin/activate
-          export PYTHON=python MAX_JOBS=4 PATCHES="${{ github.event.inputs.patches }}" FA_TURING_VERSION="${{ github.event.inputs.version || '2.3.2' }}"
+          export PYTHON=python MAX_JOBS=2 NVCC_THREADS=1 PATCHES="${{ github.event.inputs.patches }}" FA_TURING_VERSION="${{ github.event.inputs.version || '2.3.2' }}"
           linux/build_linux.sh dist
       - uses: actions/upload-artifact@v4
         with:
