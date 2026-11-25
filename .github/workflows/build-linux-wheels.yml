@@ -1,0 +1,61 @@
+name: Build Linux wheels (sm75)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to attach the wheels to (blank = artifacts only)"
+        required: false
+        default: ""
+  push:
+    tags: ["linux-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+        torch: ["2.14.1"]
+    steps:
+      - name: Tools
+        run: |
+          apt-get update -qq && apt-get install -y -qq git curl ca-certificates >/dev/null
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - uses: actions/checkout@v4
+      - name: Python and torch
+        run: |
+          uv venv -p ${{ matrix.python }} /opt/venv
+          . /opt/venv/bin/activate
+          uv pip install pip setuptools wheel ninja packaging numpy
+          uv pip install "torch==${{ matrix.torch }}" --index-url https://download.pytorch.org/whl/cu130
+          python -c "import torch,sys;print(sys.version, torch.__version__, torch.version.cuda)"
+      - name: Build
+        run: |
+          . /opt/venv/bin/activate
+          export PYTHON=python MAX_JOBS=4
+          linux/build_linux.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-py${{ matrix.python }}-torch${{ matrix.torch }}
+          path: dist/*.whl
+  release:
+    needs: build
+    if: ${{ github.event.inputs.release_tag != '' || startsWith(github.ref, 'refs/tags/linux-v') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          files: dist/*.whl
+          fail_on_unmatched_files: true
